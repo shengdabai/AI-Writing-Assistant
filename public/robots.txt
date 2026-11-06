@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /pricing
+Disallow: /login
+Disallow: /register
+Disallow: /workspace
+Disallow: /api/
+
+Sitemap: https://aiwritingassistant.com/sitemap.xml

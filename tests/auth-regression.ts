@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';import express from'express';import jwt from'jsonwebtoken';
+process.env.JWT_SECRET='synthetic-fixture-secret-with-at-least-32-bytes';
+const {loadAuthConfig}=await import('../api/config/auth.js');const{authRoutes}=await import('../api/routes/auth.js');const{userRoutes}=await import('../api/routes/user.js');const{authMiddleware,adminMiddleware}=await import('../api/middleware/auth.js');
+assert.throws(()=>loadAuthConfig({}));assert.throws(()=>loadAuthConfig({JWT_SECRET:'change-me-to-a-real-secret'}));assert.throws(()=>loadAuthConfig({JWT_SECRET:'short'}));
+const app=express();app.use(express.json());app.use('/auth',authRoutes);app.use('/user',userRoutes);app.get('/admin',authMiddleware,adminMiddleware,(_q,s)=>s.json({ok:true}));
+const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));const address=server.address()as {port:number};const base='http://127.0.0.1:'+address.port;
+async function request(path:string,method='GET',body?:unknown,token?:string){const response=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body===undefined?undefined:JSON.stringify(body)});return{status:response.status,body:await response.json()as any}}
+try{
+ const created=await request('/auth/register','POST',{name:'Fixture',email:'  AUDIT@example.invalid  ',password:'fixture-password'});assert.equal(created.status,201);const token=created.body.data.token;assert.equal(created.body.data.user.email,'audit@example.invalid');assert.ok(!('password_hash'in created.body.data.user));
+ assert.equal((await request('/auth/verify','GET',undefined,token)).status,200);const profile=await request('/user/profile','GET',undefined,token);assert.equal(profile.status,200);assert.equal(profile.body.data.name,'Fixture');assert.ok(!('password_hash'in profile.body.data));
+ assert.equal((await request('/user/profile','PUT',{name:'Changed'},token)).body.data.name,'Changed');assert.equal((await request('/auth/verify','GET',undefined,token)).body.data.user.name,'Changed');
+ assert.equal((await request('/auth/register','POST',{name:'Duplicate',email:'AUDIT@example.invalid',password:'fixture-password'})).status,409);
+ const races=await Promise.all([1,2].map(()=>request('/auth/register','POST',{name:'Race',email:'race@example.invalid',password:'fixture-password'})));assert.deepEqual(races.map(r=>r.status).sort(),[201,409]);
+ assert.equal((await request('/user/password','PUT',{current_password:'fixture-password',new_password:'new-fixture-password'},token)).status,200);assert.equal((await request('/auth/login','POST',{email:'audit@example.invalid',password:'fixture-password'})).status,401);assert.equal((await request('/auth/login','POST',{email:'AUDIT@example.invalid',password:'new-fixture-password'})).status,200);
+ assert.equal((await request('/user/subscription','PUT',{plan:'premium'},token)).status,403);assert.equal((await request('/user/subscription','GET',undefined,token)).body.data.plan,'free');
+ const expired=jwt.sign({user_id:created.body.data.user.id},process.env.JWT_SECRET,{expiresIn:-1});assert.equal((await request('/auth/refresh','POST',{},expired)).status,401);const unknown=jwt.sign({user_id:'1'},process.env.JWT_SECRET);assert.equal((await request('/auth/verify','GET',undefined,unknown)).status,401);
+ const admin=await request('/auth/register','POST',{name:'NotAdmin',email:'admin@example.com',password:'fixture-password'});assert.equal((await request('/admin','GET',undefined,admin.body.data.token)).status,403);
+ assert.equal((await request('/user/account','DELETE',{password:'new-fixture-password'},token)).status,200);assert.equal((await request('/auth/verify','GET',undefined,token)).status,401);
+ console.log('PASS real loopback routes: register/verify/profile/update/password/login, concurrent duplicate reject, hash absent, self-upgrade denied, expired refresh rejected, unknown/demo ID rejected, email not admin, account removal reflected.');
+}finally{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));}
